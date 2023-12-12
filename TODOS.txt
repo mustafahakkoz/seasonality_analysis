@@ -1,0 +1,15 @@
+TODOS: 
+
+- find datasets for each of the 3 tasks
+https://ataspinar.com/2020/12/22/time-series-forecasting-with-stochastic-signal-analysis-techniques/
+burdan 2 dataset seçebiliriz.
+1. air passengers
+2. carbon
+
+- 3. stock olcak (IBM)
+- 4. belki ECG (düzgün tek kolonlu bir data bulabilirsek)
+- 5. hoca da isterse depremi de katarız
+
+- welch araştır (niye 256-128 gibi 2nin üstlerini verdi?)
+
+- PROJENIN BAŞLIGI: IMPROVING PECNET USING INTRINSIC (içsel) SEOSANALITIES of TIMESERIES DATA
