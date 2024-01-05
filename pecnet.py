@@ -17,14 +17,14 @@ def reset_random_seeds(seed):
    random.seed(seed)
 reset_random_seeds(42)
 
-class Pecnet():
+class PECNET():
     def __init__(self,
                 experiment_name: str,
                 sampling_periods: List[int] = [1, 4, 8],
                 sampling_statistics: List[str] = ["mean"],
                 sequence_length: int = 4,
                 sequence_length_em: int = 4,
-                n_step_ahaed: int = 1, # test this one before using it
+                n_step_ahaed: int = 1, # test this one before using it
                 test_size = 0.2,
                 wavelet: str = "haar",
                 save_models = True
@@ -97,7 +97,7 @@ class Pecnet():
     def _calculate_statistics(self,
                               data: np.ndarray,
                               statistics_to_calculate: str) -> [int, float]:
-        # calculate statistics
+        # calculate statistics
         data = pd.Series(data)
         
         if statistics_to_calculate == "mean":
@@ -126,7 +126,7 @@ class Pecnet():
                         window: np.ndarray, 
                         wavelet: str,
                         level: int) -> List[float]:
-        coeffs = wavedec(window, wavelet, mode="zero", level=level)
+        coeffs = wavedec(window, wavelet, mode="symmetric", level=2)
         return np.concatenate(coeffs)[1:]
 
 
@@ -182,7 +182,7 @@ class Pecnet():
         # compile the model
         model.compile(loss='mse', optimizer='adam')
         # fit the model
-        model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
+        model.fit(X_train, y_train, epochs=1000, batch_size=64, shuffle=False, verbose=0)
         return model
 
 
@@ -200,7 +200,7 @@ class Pecnet():
         # compile the model
         model.compile(loss='mse', optimizer='adam')
         # fit the model
-        model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
+        model.fit(X_train, y_train, epochs=1000, batch_size=64, shuffle=False, verbose=0)
         return model
 
 
@@ -209,15 +209,15 @@ class Pecnet():
         model = tf.keras.Sequential([
             tf.keras.layers.Input(shape=(sequence_length_final,)),
             tf.keras.layers.Dense(sequence_length_final*2, activation='relu'),
-            tf.keras.layers.Dense(sequence_length_final*4, activation='relu'),
-            tf.keras.layers.Dense(sequence_length_final*2, activation='relu'),
-            tf.keras.layers.Dense(sequence_length_final, activation='relu'),
+            # tf.keras.layers.Dense(sequence_length_final*4, activation='relu'),
+            # tf.keras.layers.Dense(sequence_length_final*2, activation='relu'),
+            # tf.keras.layers.Dense(sequence_length_final, activation='relu'),
             tf.keras.layers.Dense(1)
         ])
         # compile the model
         model.compile(loss='mse', optimizer='adam')
         # fit the model
-        model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
+        model.fit(X_train, y_train, epochs=1000, batch_size=64, shuffle=False, verbose=0)
         return model
 
 
@@ -236,21 +236,30 @@ class Pecnet():
     ####################################################################
     def preprocess(self,
                    data: np.array) -> List[np.array]:
-        # build sequences
+        # build sequences for inputs X
         sequences, sequence_means, past = self._build_sequences(data, 
                                                                 self._sorted_sampling_periods, 
                                                                 self.sampling_statistics, 
                                                                 self.sequence_length, 
                                                                 self.wavelet, 
                                                                 self._required_time_steps)
-        # define X, y
-        y = np.asarray(data[self._required_time_steps + self.n_step_ahaed-1:], dtype=np.float32)
-        X = np.asarray(sequences[:len(y)], dtype=np.float32)
         
-        # define X_means
-        X_means = np.asarray(sequence_means[:len(y)], dtype=np.float32)
+        # define X, y
+        X = np.asarray(sequences, dtype=np.float32)[:-1] # remove the last element since it includes the target
+        y = np.asarray(data[self._required_time_steps:], dtype=np.float32)
 
-        # test size may be a ratio or an integer
+        # calculate y_means. create sequences for data, then normalize original value by subtracting mean of sequence
+        data_windows = self._build_past_for_each_time_step(data, window_length=self.sequence_length)
+        data_windows_mean = np.mean(data_windows, axis=1, keepdims=True).squeeze()
+        y_means = data_windows_mean[self._required_time_steps-self.sequence_length+1:]
+            
+        # define X_means
+        X_means = np.asarray(sequence_means, dtype=np.float32)[:-1] # remove the last element since it includes the target
+        
+        # normalize y by subtracting lowest period's mean
+        y_normalized = y - X_means[:,-1,0]
+        
+        # test size may be a ratio or an integer
         if self.test_size < 1:
             test_size = int(len(X) * self.test_size)
         else:
@@ -258,12 +267,10 @@ class Pecnet():
             
         # train test split
         X_train, X_test = X[:-test_size], X[-test_size:]
-        y_train, y_test = y[:-test_size], y[-test_size:]
+        y_train, y_test = y_normalized[:-test_size], y_normalized[-test_size:]
         self.X_train_means, self.X_test_means = X_means[:-test_size], X_means[-test_size:]
+        self.y_train_means, self.y_test_means = y_means[:-test_size], y_means[-test_size:]
         
-        # normalize y_train and y_test by lowest period's mean
-        y_train = y_train - self.X_train_means[:,-1,0]
-        y_test = y_test - self.X_test_means[:,-1,0]
         return X_train, X_test, y_train, y_test
     
     def fit(self,
@@ -329,7 +336,7 @@ class Pecnet():
         # calculate the wavelet transform
         wavelet_coeffs_em = np.apply_along_axis(self._calculate_dwt, 1, X_train_em_normalized, wavelet=self.wavelet, level=None)
 
-        # fit the error module
+        # fit the error module
         model_em = self._train_NN_em(wavelet_coeffs_em, y_train_em_normalized, self.sequence_length_em)
         preds_em = model_em.predict(wavelet_coeffs_em)
         
@@ -358,8 +365,9 @@ class Pecnet():
         preds_final_train = model_final.predict(X_train_final)
         
         # denormalize the pred and y_train_final by lowest period's mean
-        preds_final_train_denormalized = preds_final_train.squeeze() + self.X_train_means[:,-1,0][self._num_elements_to_remove:]
-        y_train_final_denormalized = y_train_final + self.X_train_means[:,-1,0][self._num_elements_to_remove:]
+        self._preds_final_train_denormalized = preds_final_train.squeeze() + self.X_train_means[:,-1,0][self._num_elements_to_remove:]
+        self._y_train_final_denormalized = y_train_final + self.X_train_means[:,-1,0][self._num_elements_to_remove:]
+        # y_train_final_denormalized = y_train_final + self.y_train_means[self._num_elements_to_remove:]
         
         # save the model
         if self.save_models:
@@ -367,8 +375,8 @@ class Pecnet():
         self._model_final = model_final
         
         ################################ evaluation on train set ########################
-        # calculate the final training scores
-        self._rmse_train_final, self._r2_train_final, self._mape_train_final = self._calculate_scores(y_train_final_denormalized, preds_final_train_denormalized)
+        # calculate the final training scores
+        self._rmse_train_final, self._r2_train_final, self._mape_train_final = self._calculate_scores(self._y_train_final_denormalized, self._preds_final_train_denormalized)
         print(f"Final train scores: RMSE: {self._rmse_train_final}, R2: {self._r2_train_final}, MAPE: {self._mape_train_final}")
         return self._rmse_train_final, self._r2_train_final, self._mape_train_final
 
@@ -376,7 +384,7 @@ class Pecnet():
     def predict(self,
                 X_test: np.array,
                 y_test: np.array) -> List[np.array]:
-        # load all models and predict the test data
+        # load all models and predict the test data
         cascade_ctr = 0
         for p, period in enumerate(self.sampling_periods):
             for s, stat in enumerate(self.sampling_statistics):
@@ -408,7 +416,7 @@ class Pecnet():
 
         # build train data for error module by windowing compansated errors
         X_test_em = self._build_past_for_each_time_step(compansated_preds_errors, window_length=self.sequence_length_em)
-        X_test_em = np.array(X_test_em[:-1])
+        X_test_em = np.array(X_test_em[:-1]) # remove the last element since it includes the target
 
         # normalize X_test_em by subtracting mean
         X_test_em_means = np.mean(X_test_em, axis=1, keepdims=True)
@@ -417,7 +425,7 @@ class Pecnet():
         # calculate the wavelet transform
         wavelet_coeffs_em = np.apply_along_axis(self._calculate_dwt, 1, X_test_em_normalized, wavelet=self.wavelet, level=None)
 
-        # load the error module and predict the errors
+        # load the error module and predict the errors
         model_em = self._model_em
         preds_em = model_em.predict(wavelet_coeffs_em)
         
@@ -441,6 +449,7 @@ class Pecnet():
         
         # denormalize the pred and y_train_final by lowest period's mean
         preds_final_test_denormalized = preds_final_test.squeeze() + self.X_test_means[:,-1,0][self._num_elements_to_remove:]
+        # y_test_final_denormalized = y_test_final + self.X_test_means[:,0,0][self._num_elements_to_remove:]
         y_test_final_denormalized = y_test_final + self.X_test_means[:,-1,0][self._num_elements_to_remove:]
 
         return preds_final_test_denormalized, y_test_final_denormalized
